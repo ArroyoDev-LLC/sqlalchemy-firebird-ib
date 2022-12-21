@@ -511,7 +511,8 @@ class FBCompiler(sql.compiler.SQLCompiler):
         even though they aren't needed,
         """  # noqa
         result = super(FBCompiler, self).get_select_precolumns(select, **kw)
-
+        if self.dialect._is_interbase:
+            return result
         if select._limit_clause is not None:
             result += "FIRST (%s) " % self.process(select._limit_clause, **kw)
         if select._offset_clause is not None:
@@ -521,7 +522,27 @@ class FBCompiler(sql.compiler.SQLCompiler):
 
     def limit_clause(self, select, **kw):
         """Already taken care of in the `get_select_precolumns` method."""
-        return ""
+        if not self.dialect._is_interbase:
+            return ""
+        result = " "
+        if (
+            select._limit_clause is not None
+            and select._offset_clause is not None
+        ):
+            # TODO: this does not allow any expressions
+            limit = select._offset_clause.value + select._limit_clause.value
+            result += "ROWS %s TO %s" % (
+                select._offset_clause.value,
+                limit,
+            )
+            return result
+        if select._offset_clause is not None:
+            result += "ROWS %s to 100.0" % self.process(
+                select._offset_clause, **kw
+            )
+        if select._limit_clause is not None:
+            result += "ROWS %s" % self.process(select._limit_clause, **kw)
+        return result
 
     def returning_clause(self, stmt, returning_cols):
         columns = [
@@ -703,15 +724,15 @@ class FBDialect(default.DefaultDialect):
     # first connect
     _version_two = True
 
+    _is_interbase = False
+
     def initialize(self, connection):
         super(FBDialect, self).initialize(connection)
+        self._is_interbase = "interbase" in self.server_version_info
         self._version_two = (
             "firebird" in self.server_version_info
             and self.server_version_info >= (2,)
-        ) or (
-            "interbase" in self.server_version_info
-            and self.server_version_info >= (6,)
-        )
+        ) or (self._is_interbase and self.server_version_info >= (6,))
 
         if not self._version_two:
             # TODO: whatever other pre < 2.0 stuff goes here
@@ -767,7 +788,7 @@ class FBDialect(default.DefaultDialect):
         # this one, using view_blr, is at the Firebird FAQ among other places:
         # http://www.firebirdfaq.org/faq174/
         s = """
-        select TRIM(rdb$relation_name) AS relation_name
+        select rdb$relation_name AS relation_name
         from rdb$relations
         where rdb$view_blr is null
         and (rdb$system_flag is null or rdb$system_flag = 0)
@@ -790,7 +811,7 @@ class FBDialect(default.DefaultDialect):
     @reflection.cache
     def get_temp_table_names(self, connection, schema=None, **kw):
         s = """
-        select TRIM(rdb$relation_name) AS relation_name
+        select rdb$relation_name AS relation_name
         from rdb$relations
         where rdb$view_blr is null
         and (rdb$system_flag is null or rdb$system_flag = 0)
@@ -804,7 +825,7 @@ class FBDialect(default.DefaultDialect):
     @reflection.cache
     def get_sequence_names(self, connection, schema=None, **kw):
         s = """
-        select TRIM(rdb$generator_name) AS generator_name
+        select rdb$generator_name AS generator_name
         from rdb$generators
         where (rdb$system_flag is null or rdb$system_flag = 0);
         """
@@ -817,7 +838,7 @@ class FBDialect(default.DefaultDialect):
     def get_view_names(self, connection, schema=None, **kw):
         # see http://www.firebirdfaq.org/faq174/
         s = """
-        select TRIM(rdb$relation_name) AS relation_name
+        select rdb$relation_name AS relation_name
         from rdb$relations
         where rdb$view_blr is not null
         and (rdb$system_flag is null or rdb$system_flag = 0);
@@ -847,7 +868,7 @@ class FBDialect(default.DefaultDialect):
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         # Query to extract the PK/FK constrained fields of the given table
         keyqry = """
-        SELECT TRIM(se.rdb$field_name) AS fname
+        SELECT se.rdb$field_name AS fname
         FROM rdb$relation_constraints rc
              JOIN rdb$index_segments se ON rc.rdb$index_name=se.rdb$index_name
         WHERE rc.rdb$constraint_type=? AND rc.rdb$relation_name=?
@@ -887,12 +908,12 @@ class FBDialect(default.DefaultDialect):
             return dict(name=self.normalize_name(genr.fgenerator))
 
     @reflection.cache
-    def get_columns(  # noqa: C901
+    def get_columns(
         self, connection, table_name, schema=None, **kw
-    ):
+    ):  # noqa: C901
         # Query to extract the details of all the fields of the given table
         tblqry = """
-        SELECT TRIM(r.rdb$field_name) AS fname,
+        SELECT r.rdb$field_name AS fname,
                         r.rdb$null_flag AS null_flag,
                         t.rdb$type_name AS ftype,
                         f.rdb$field_sub_type AS stype,
@@ -991,10 +1012,10 @@ class FBDialect(default.DefaultDialect):
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         # Query to extract the details of each UK/FK of the given table
         fkqry = """
-        SELECT TRIM(rc.rdb$constraint_name) AS cname,
-               TRIM(cse.rdb$field_name) AS fname,
-               TRIM(ix2.rdb$relation_name) AS targetrname,
-               TRIM(se.rdb$field_name) AS targetfname
+        SELECT rc.rdb$constraint_name AS cname,
+               cse.rdb$field_name AS fname,
+               ix2.rdb$relation_name AS targetrname,
+               se.rdb$field_name AS targetfname
         FROM rdb$relation_constraints rc
              JOIN rdb$indices ix1 ON ix1.rdb$index_name=rc.rdb$index_name
              JOIN rdb$indices ix2 ON ix2.rdb$index_name=ix1.rdb$foreign_key
@@ -1032,9 +1053,9 @@ class FBDialect(default.DefaultDialect):
     @reflection.cache
     def get_indexes(self, connection, table_name, schema=None, **kw):
         qry = """
-        SELECT TRIM(ix.rdb$index_name) AS index_name,
+        SELECT ix.rdb$index_name AS index_name,
                ix.rdb$unique_flag AS unique_flag,
-               TRIM(ic.rdb$field_name) AS field_name
+               ic.rdb$field_name AS field_name
         FROM rdb$indices ix
              JOIN rdb$index_segments ic
                   ON ix.rdb$index_name=ic.rdb$index_name
