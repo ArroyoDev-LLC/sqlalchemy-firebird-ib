@@ -61,8 +61,16 @@ from sqlalchemy import util
 class FBDialect_fdb(FBDialect_kinterbasdb):
     driver = "fdb"
     supports_statement_cache = True
+    is_interbase = False
 
-    def __init__(self, enable_rowcount=True, retaining=False, **kwargs):
+    def __init__(
+        self,
+        enable_rowcount=True,
+        retaining=False,
+        is_interbase=False,
+        **kwargs,
+    ):
+        self.is_interbase = is_interbase
         super(FBDialect_fdb, self).__init__(
             enable_rowcount=enable_rowcount, retaining=retaining, **kwargs
         )
@@ -93,10 +101,18 @@ class FBDialect_fdb(FBDialect_kinterbasdb):
         #   LI-V6.3.3.12981 Firebird 2.0
         # where the first version is a fake one resembling the old
         # Interbase signature.
-        isc_info_firebird_version = 103
+        isc_info_firebird_version = 103 if not self.is_interbase else 12
         fbconn = connection.connection
 
-        version = fbconn.db_info(isc_info_firebird_version)
+        try:
+            version = fbconn.db_info(isc_info_firebird_version)
+        except Exception as e:
+            try:
+                version = fbconn.db_info(
+                    12 if isc_info_firebird_version == 103 else 103
+                )
+            except Exception as ee:
+                raise ee from e
 
         return self._parse_version_info(version)
 
