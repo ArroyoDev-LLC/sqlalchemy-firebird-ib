@@ -447,7 +447,7 @@ class FBCompiler(sql.compiler.SQLCompiler):
         )
 
     def visit_alias(self, alias, asfrom=False, **kwargs):
-        if self.dialect._version_two:
+        if self.dialect._version_two and not self.dialect._is_interbase:
             return super(FBCompiler, self).visit_alias(
                 alias, asfrom=asfrom, **kwargs
             )
