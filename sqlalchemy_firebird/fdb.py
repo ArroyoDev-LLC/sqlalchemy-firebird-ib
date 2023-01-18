@@ -56,12 +56,31 @@ accept every argument that Kinterbasdb does.
 
 from .kinterbasdb import FBDialect_kinterbasdb
 from sqlalchemy import util
+from sqlalchemy import LargeBinary
+from sqlalchemy import types as sqltypes
+
+
+class _FBBlob(LargeBinary):
+    def result_processor(self, dialect, coltype):
+        def process(value):
+            if value is not None:
+                try:
+                    value = bytes(value)
+                except TypeError:
+                    value.close()
+                    return None
+            return value
+
+        return process
 
 
 class FBDialect_fdb(FBDialect_kinterbasdb):
     driver = "fdb"
     supports_statement_cache = True
     is_interbase = False
+    colspecs = util.update_copy(
+        FBDialect_kinterbasdb.colspecs, {sqltypes.LargeBinary: _FBBlob}
+    )
 
     def __init__(
         self,
