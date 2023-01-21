@@ -54,13 +54,15 @@ accept every argument that Kinterbasdb does.
 
 """  # noqa
 
-from .kinterbasdb import FBDialect_kinterbasdb
-from sqlalchemy import util
 from sqlalchemy import LargeBinary
 from sqlalchemy import types as sqltypes
+from sqlalchemy import util
+
+from .base import _StringType
+from .kinterbasdb import FBDialect_kinterbasdb
 
 
-class _FBBlob(LargeBinary):
+class _FBLargeBinary(LargeBinary):
     def result_processor(self, dialect, coltype):
         def process(value):
             if value is not None:
@@ -74,12 +76,31 @@ class _FBBlob(LargeBinary):
         return process
 
 
+class _FBTEXT(_StringType, sqltypes.TEXT):
+    __visit_name__ = "TEXT"
+
+    def result_processor(self, dialect, coltype):
+        from fdb.fbcore import BlobReader
+
+        proc = super(sqltypes.TEXT, self).result_processor(dialect, coltype)
+
+        def process(value):
+            if proc:
+                value = proc(value)
+            if isinstance(value, BlobReader):
+                value = value.read()
+            return value
+
+        return process
+
+
 class FBDialect_fdb(FBDialect_kinterbasdb):
     driver = "fdb"
     supports_statement_cache = True
     is_interbase = False
     colspecs = util.update_copy(
-        FBDialect_kinterbasdb.colspecs, {sqltypes.LargeBinary: _FBBlob}
+        FBDialect_kinterbasdb.colspecs,
+        {sqltypes.LargeBinary: _FBLargeBinary, sqltypes.TEXT: _FBTEXT},
     )
 
     def __init__(
